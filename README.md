@@ -3,6 +3,9 @@
 
 [[Project web](https://fangshiyuu.github.io/Actor-Reasoner/)]
 
+## Updates
+2025/12/10: This work has been published in IEEE Transactions on Intelligent Transportation System. If you find it helpful, please consider citing our work.
+
 ## Getting started 🚀
 
 #### 1. Install Ollama
