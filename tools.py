@@ -2,6 +2,7 @@ import copy
 import math
 import random
 import re
+import numpy as np
 from idm_controller import VEH_L
 from vehicle import Vehicle
 from params import *
@@ -17,35 +18,44 @@ else:
     raise ValueError('no such environment, check Scenario_name in params')
 
 
-def initialize_vehicles(num=2):
-    '''generate ego vehicle and 1 inter vehicle'''
-    # ego_info = Vehicle('s2', 'n2', 'cav', 0)
-    # other_info = Vehicle('e2', 'w2', 'nor', 1)
+def initialize_vehicles(num=4):
+    '''generate ego vehicle and inter vehicles safely based on available map entrances'''
     ego_entrance = random.choice(POSSIBLE_ENTRANCE)
     ego_info = Vehicle(ego_entrance, random.choice(ENTRANCE_EXIT_RELATION[ego_entrance]), 'cav', 0)
-    filtered_entrance = copy.deepcopy(POSSIBLE_ENTRANCE)
-    filtered_entrance = [entrance for entrance in filtered_entrance if entrance != ego_entrance]
-    if num == 2:
-        while True:
-            other_entrance = random.choice(filtered_entrance)
-            other_exit = random.choice(ENTRANCE_EXIT_RELATION[other_entrance])
-            other_info = Vehicle(other_entrance, other_exit, random.choice(['nor', 'agg', 'con']), 1)  #
-            if not if_passed_conflict_point(ego_info, other_info):
-                break
-        return ego_info, other_info
-    else:
-        vehicle_exist = 1
-        other_entrances = []
-        other_infos = []
-        while vehicle_exist != num:
-            other_entrance = random.choice(filtered_entrance)
-            other_exit = random.choice(ENTRANCE_EXIT_RELATION[other_entrance])
-            other_info = Vehicle(other_entrance, other_exit, random.choice(['nor', 'agg', 'con']), vehicle_exist)  #
-            other_entrances.append(other_entrance)
+    
+    # Get all entrances except the ego's to prevent spawning on top of each other
+    available_entrances = [e for e in POSSIBLE_ENTRANCE if e != ego_entrance]
+    
+    other_infos = []
+    vehicle_id = 1
+    
+    # Keep spawning until we hit the requested number OR we run out of safe roads
+    while len(other_infos) < (num - 1) and len(available_entrances) > 0:
+        other_entrance = random.choice(available_entrances)
+        other_exit = random.choice(ENTRANCE_EXIT_RELATION[other_entrance])
+        
+        other_info = Vehicle(other_entrance, other_exit, random.choice(['nor', 'agg', 'con']), vehicle_id)  
+        
+        # Only add the vehicle if it actually creates an interesting conflict scenario
+        if not if_passed_conflict_point(ego_info, other_info):
             other_infos.append(other_info)
-            filtered_entrance = [entrance for entrance in filtered_entrance if entrance not in other_entrances]
-            vehicle_exist += 1
-        return ego_info, other_infos
+            vehicle_id += 1
+            
+        # Remove this entrance from the pool so we don't spawn two cars in the exact same spot
+        available_entrances.remove(other_entrance)
+        
+    # Fallback: If the randomizer failed to create ANY conflicts, force at least 1 target
+    if len(other_infos) == 0:
+        while True:
+            backup_entrance = random.choice([e for e in POSSIBLE_ENTRANCE if e != ego_entrance])
+            backup_exit = random.choice(ENTRANCE_EXIT_RELATION[backup_entrance])
+            backup_info = Vehicle(backup_entrance, backup_exit, random.choice(['nor', 'agg', 'con']), 1)
+            if not if_passed_conflict_point(ego_info, backup_info):
+                other_infos.append(backup_info)
+                break
+
+    # We now guarantee other_infos is ALWAYS a list, preventing downstream crashes
+    return ego_info, other_infos
 
 def cal_ttcp(speed_limit, veh_dis2cp, veh_v, veh_acc):
     if veh_acc > 0:
@@ -75,7 +85,6 @@ def cal_ttcp(speed_limit, veh_dis2cp, veh_v, veh_acc):
     return ttcp
 
 def get_leading_rearing_vehicle_in_same_lane(ego_info, other_info):
-    '''1-1 interaction, no leading and rearing vehicle'''
     leading_vehicle_info, rearing_vehicle_info = None, None
     return leading_vehicle_info, rearing_vehicle_info
 
@@ -108,18 +117,34 @@ def evaluate_safety_with_conflict_vehicles(ego_info, other_info):
         dangerous_level = 0
     return dangerous_level
 
-def find_opponent(ego_info, other_info, p=False):
-    most_danger_opponent = other_info[0]
-    most_danger_ttcp = 10000
+def get_euclidean_distance(obj1, obj2):
+    return math.sqrt((obj1.x - obj2.x)**2 + (obj1.y - obj2.y)**2)
+
+def find_opponent(ego_info, other_infos, p=False):
+    most_danger_opponent = other_infos[0]
+    most_danger_score = 10000  # Lower is more dangerous
     cp_occupied = None
-    for other in other_info:
-        if not if_passed_conflict_point(ego_info, other):
-            delta_ttcp = abs(get_delta_ttcp(ego_info, other))
-            if delta_ttcp < most_danger_ttcp:
-                most_danger_opponent = other
-            if delta_ttcp < 4:
-                cp_occupied = other
-    if cp_occupied is not None:
+    
+    for other in other_infos:
+        # --- NEW: Pedestrian Euclidean Override ---
+        if getattr(other, 'type', 'vehicle') == 'pedestrian':
+            dist = get_euclidean_distance(ego_info, other)
+            if dist < 20:  # If within 20 meters, extreme danger
+                score = dist - 100 # Deeply negative to mathematically override all cars
+                if score < most_danger_score:
+                    most_danger_score = score
+                    most_danger_opponent = other
+        else:
+            if not if_passed_conflict_point(ego_info, other):
+                delta_ttcp = abs(get_delta_ttcp(ego_info, other))
+                # Only rank vehicles if a critical pedestrian hasn't triggered an override
+                if delta_ttcp < most_danger_score and most_danger_score >= 0:
+                    most_danger_score = delta_ttcp
+                    most_danger_opponent = other
+                if delta_ttcp < 4:
+                    cp_occupied = other
+                    
+    if cp_occupied is not None and most_danger_score >= 0:
         most_danger_opponent = cp_occupied
     return most_danger_opponent
 
@@ -133,38 +158,53 @@ def plot_figs(ego_info, other_info, ax, llm_output, instruction_info, retrieved_
 
     if isinstance(other_info, list):
         for other in other_info:
-            hv_color = 'blue'
-            if other.aggressiveness == 'con':
-                hv_color = 'green'
-            elif other.aggressiveness == 'agg':
-                hv_color = 'red'
-            opponent = find_opponent(ego_info, other_info)
-            if other == opponent:
-                hv_color = 'black'
-            ax.scatter(other.x, other.y, color=hv_color)
-            ax.plot(environment.ALL_REF_LINE[other.entrance][other.exit][:, 0],
-                    environment.ALL_REF_LINE[other.entrance][other.exit][:, 1], color='grey')
-            ax.text(other.x + 2, other.y + 2, f'id:{other.id}, v:{round(other.speed, 2)}')
+            # --- NEW: Plot Pedestrians as Orange Stars ---
+            if getattr(other, 'type', 'vehicle') == 'pedestrian':
+                ax.scatter(other.x, other.y, color='orange', marker='*', s=100)
+                ax.text(other.x + 2, other.y + 2, f'Ped:{other.id}, v:{round(other.speed, 2)}')
+            else:
+                hv_color = 'blue'
+                if other.aggressiveness == 'con':
+                    hv_color = 'green'
+                elif other.aggressiveness == 'agg':
+                    hv_color = 'red'
+                opponent = find_opponent(ego_info, other_info)
+                if other == opponent:
+                    hv_color = 'black'
+                ax.scatter(other.x, other.y, color=hv_color)
+                ax.plot(environment.ALL_REF_LINE[other.entrance][other.exit][:, 0],
+                        environment.ALL_REF_LINE[other.entrance][other.exit][:, 1], color='grey')
+                ax.text(other.x + 2, other.y + 2, f'id:{other.id}, v:{round(other.speed, 2)}')
     else:
         ax.scatter(other_info.x, other_info.y, color='black')
-        ax.plot(environment.ALL_REF_LINE[other_info.entrance][other_info.exit][:, 0], environment.ALL_REF_LINE[other_info.entrance][other_info.exit][:, 1], color='grey')
+        if getattr(other_info, 'type', 'vehicle') != 'pedestrian':
+            ax.plot(environment.ALL_REF_LINE[other_info.entrance][other_info.exit][:, 0], environment.ALL_REF_LINE[other_info.entrance][other_info.exit][:, 1], color='grey')
         ax.text(other_info.x + 2, other_info.y + 2, round(other_info.speed, 2))
+        
     if Scenario_name == 'intersection' or Scenario_name == 'roundabout':
         if isinstance(other_info, list):
             for i, other in enumerate(other_info):
-                ax.text(20, 60 + 10*i, f'HDV_{other.id} true type:{other.aggressiveness}')
+                t = getattr(other, 'type', 'vehicle')
+                if t == 'pedestrian':
+                    ax.text(20, 60 + 10*i, f'Ped_{other.id} behavior:{other.behavior}')
+                else:
+                    ax.text(20, 60 + 10*i, f'HDV_{other.id} true type:{other.aggressiveness}')
         else:
-            ax.text(20, 60, f'HDV true type:{other_info.aggressiveness}')
+            if getattr(other_info, 'type', 'vehicle') == 'pedestrian':
+                ax.text(20, 60, f'Ped behavior:{other_info.behavior}')
+            else:
+                ax.text(20, 60, f'HDV true type:{other_info.aggressiveness}')
         ax.text(-90, -50, llm_output[0])
         ax.text(-90, -60, llm_output[1])
         ax.text(-90, -70, llm_output[2])
         ax.text(-90, -80, llm_output[3])
         ax.text(-90, 50, f'instruct: {instruction_info}')
-        # ax.text(-90, 40, f'mem_instruct: {extract_instruction(retrieved_instruction_info)}')
-        # ax.text(-90, 30, f'mem_ehmi: {extract_hmi(retrieved_instruction_info)}')
     elif Scenario_name == 'merge':
         ax.text(0, 30, f'instruction: {instruction_info}')
-        ax.text(0, 20, f'HDV true type:{other_info.aggressiveness}')
+        if getattr(other_info, 'type', 'vehicle') == 'pedestrian':
+             ax.text(0, 20, f'Ped behavior:{other_info.behavior}')
+        else:
+             ax.text(0, 20, f'HDV true type:{other_info.aggressiveness}')
         ax.text(0, -30, llm_output[0])
         ax.text(0, -40, llm_output[1])
         ax.text(0, -50, llm_output[2])
@@ -201,18 +241,47 @@ def acc2action(speed, acc):
 def generate_comments(ego_info, other_info, ego_info_old, other_info_old):
     return ''
 
-def generate_scenario_description(ego_info, other_info):
+def generate_scenario_description(ego_info, other_infos):
+    """
+    UPGRADED: Replaces TTC with spatial distance for pedestrians, warning 
+    the LLM of absolute right-of-way.
+    """
+    if not isinstance(other_infos, list):
+        other_infos = [other_infos]
+
     ego_direction = 'going straight' if environment.if_going_straight(ego_info.entrance, ego_info.exit) else 'turning'
-    other_info_direction = 'going straight' if environment.if_going_straight(other_info.entrance, other_info.exit) else 'turning'
-    msg = ''
-    msg += f'Your are Veh#{ego_info.id}, you are now {ego_direction}, these are vehicles information you should pay attention and give suggestion when making decision: \n'
-    if str(other_info.entrance) + str(other_info.exit) in environment.CONFLICT_RELATION[ego_info.entrance][ego_info.exit] and if_passed_conflict_point(ego_info, other_info):
-        msg += f'--Veh#{other_info.id}: Veh#{other_info.id} is now {other_info_direction}, ' \
-               f'the position of conflict point between you and Veh#{other_info.id} is ({environment.CONFLICT_RELATION_STATE[ego_info.entrance][ego_info.exit][str(other_info.entrance) + str(other_info.exit)]}). ' \
-               f'Veh#{other_info.id} speed is {other_info.speed}, distance to conflict point is {get_dis2cp(other_info, ego_info)}. ' \
-               f'Your speed is {ego_info.speed}, distance to conflict point is {get_dis2cp(ego_info, other_info)}. \n'
-    else:
-        msg += f'You has no conflict with Veh#{other_info.id}'
+    msg = f'You are Veh#{ego_info.id}, you are now {ego_direction}. Here is the information for the surrounding entities you must track and negotiate with: \n'
+
+    danger_list = []
+    for other in other_infos:
+        if getattr(other, 'type', 'vehicle') == 'pedestrian':
+            dist = get_euclidean_distance(ego_info, other)
+            if dist < 20: 
+                danger_list.append((dist - 100, other))
+        else:
+            if str(other.entrance) + str(other.exit) in environment.CONFLICT_RELATION[ego_info.entrance][ego_info.exit]:
+                if not if_passed_conflict_point(ego_info, other):
+                    delta_ttcp = abs(get_delta_ttcp(ego_info, other))
+                    danger_list.append((delta_ttcp, other))
+
+    danger_list.sort(key=lambda x: x[0])
+
+    if len(danger_list) == 0:
+        msg += 'You currently have no direct conflict with any surrounding entities.'
+        return msg
+
+    for rank, (score, other) in enumerate(danger_list[:3]):
+        if getattr(other, 'type', 'vehicle') == 'pedestrian':
+            dist = get_euclidean_distance(ego_info, other)
+            msg += f'--[Target {rank+1}] Pedestrian#{other.id}: A human pedestrian is at the crosswalk. ' \
+                   f'Their speed is {round(other.speed, 2)} m/s, Euclidean distance from you is {round(dist, 2)}m. ' \
+                   f'PEDESTRIANS HAVE ABSOLUTE RIGHT-OF-WAY! YOU MUST YIELD! \n'
+        else:
+            other_direction = 'going straight' if environment.if_going_straight(other.entrance, other.exit) else 'turning'
+            msg += f'--[Target {rank+1}] Veh#{other.id}: Veh#{other.id} is {other_direction}. ' \
+                   f'The conflict point is at ({environment.CONFLICT_RELATION_STATE[ego_info.entrance][ego_info.exit][str(other.entrance) + str(other.exit)]}). ' \
+                   f'Veh#{other.id} speed is {round(other.speed, 2)}, distance to conflict point is {round(get_dis2cp(other, ego_info), 2)}. ' \
+                   f'Your distance to this conflict point is {round(get_dis2cp(ego_info, other), 2)}. \n'
     return msg
 
 def extract_hmi(retrieved_instruction_info):
@@ -227,10 +296,33 @@ def extract_instruction(retrieved_instruction_info):
     human_instruction_value = human_instructions.group(1) if human_instructions else None
     return human_instruction_value
 
-def scenario_experience_generator(ego_info, other_info, llm_output, human_instruction):
+def scenario_experience_generator(ego_info, other_infos, llm_output, human_instruction):
+    if isinstance(other_infos, list):
+        other_info = find_opponent(ego_info, other_infos)
+    else:
+        other_info = other_infos
+        
+    if getattr(other_info, 'type', 'vehicle') == 'pedestrian':
+        delta_ttcp = 0.0 # TTC is irrelevant for pedestrians, padded to 0.0
+        delta_speed = round(ego_info.speed - other_info.speed, 1)
+        dist = get_euclidean_distance(ego_info, other_info)
+        delta_dis2des = round(dist, 1)
+        
+        # Ensure instruction exists as a number to prevent IndexError
+        if human_instruction is None:
+            instruction = 0
+        else:
+            instruction = -1
+            
+        # FIXED: Mapped driving style to "normal" to prevent KeyError in memory.py
+        sce_descrip = f'Conflict info: instruction is {instruction}, disdes is {ego_info.dis2des}, delta_ttcp is {delta_ttcp}, delta_disdes is {delta_dis2des}, delta_v is {delta_speed}; ' \
+                      f'Interaction vehicle driving style: normal; Interaction vehicle intention: {llm_output[2]}; HMI info: {llm_output[1]}; Human instruction: {human_instruction} (PEDESTRIAN).'
+        return sce_descrip
+
     ttcp_ego = cal_ttcp(ego_info.max_speed, get_dis2cp(ego_info, other_info), ego_info.speed, ego_info.acc)
     ttcp_other = cal_ttcp(other_info.max_speed, get_dis2cp(other_info, ego_info), other_info.speed, other_info.acc)
     delta_ttcp = ttcp_other - ttcp_ego
+    
     if delta_ttcp > 20:
         delta_ttcp = 20
     elif delta_ttcp < -20:
@@ -241,6 +333,7 @@ def scenario_experience_generator(ego_info, other_info, llm_output, human_instru
     delta_speed = round(ego_info.speed - other_info.speed, 1)
     delta_dis2des = round(ego_info.dis2des - other_info.dis2des, 1)
     driving_style = llm_output[3]
+    
     if driving_style not in ['CONSERVATIVE', 'AGGRESSIVE']:
         driving_style = 'normal'
     else:
@@ -248,6 +341,7 @@ def scenario_experience_generator(ego_info, other_info, llm_output, human_instru
             driving_style = 'conservative'
         else:
             driving_style = 'aggressive'
+            
     if human_instruction is None:
         instruction = 0
     else:
@@ -255,6 +349,7 @@ def scenario_experience_generator(ego_info, other_info, llm_output, human_instru
             instruction = 1
         else:
             instruction = -1
+            
     sce_descrip = f'Conflict info: instruction is {instruction}, disdes is {ego_info.dis2des}, delta_ttcp is {delta_ttcp}, delta_disdes is {delta_dis2des}, delta_v is {delta_speed}; ' \
                   f'Interaction vehicle driving style: {driving_style}; Interaction vehicle intention: {llm_output[2]}; HMI info: {llm_output[1]}; Human instruction: {human_instruction}.'
     return sce_descrip
@@ -274,6 +369,9 @@ def calculate_heading(x1, y1, x2, y2):
     return heading
 
 def generate_simulation_hdv_instruction(ego_info, other_info):
+    if getattr(other_info, 'type', 'vehicle') == 'pedestrian':
+        return 'Pedestrian crossing'
+        
     if not if_passed_conflict_point(ego_info, other_info):
         if abs(get_dis2cp(other_info, ego_info)) < 4 or (get_dis2cp(other_info, ego_info) < 15 and other_info.speed > 4.9):
             instruction_list = ['I will go first', 'I will go ahead', 'I will accelerate', 'I will speed up', 'I will faster']
@@ -297,6 +395,27 @@ def adjust_acc(vehicle_info, acc):
     return acc
 
 def kinematic_model(vehicle_info_old, acc):
+    # --- NEW: Handle Pedestrian Orthogonal Movements ---
+    if getattr(vehicle_info_old, 'type', 'vehicle') == 'pedestrian':
+        ped_info = copy.deepcopy(vehicle_info_old)
+        ped_info.speed += acc * Dt
+        ped_info.speed = np.clip(ped_info.speed, 0, ped_info.max_speed)
+        ped_info.dis2des -= ped_info.speed * Dt
+        
+        loc = ped_info.entrance
+        direction = ped_info.exit
+        ref_line = environment.PED_REF_LINE[loc][direction]
+        gap_list = environment.PED_GAP_LIST[loc][direction]
+        
+        index = np.argmin(abs(gap_list - ped_info.dis2des))
+        x = ref_line[index, 0]
+        y = ref_line[index, 1]
+        ped_info.heading = calculate_heading(ped_info.x, ped_info.y, x, y)
+        ped_info.x, ped_info.y = x, y
+        ped_info.acc = acc
+        return ped_info
+
+    # Original Vehicle Kinematics
     acc = adjust_acc(vehicle_info_old, acc)
     vehicle_info = copy.deepcopy(vehicle_info_old)
     vehicle_info.speed += acc * Dt
@@ -308,4 +427,3 @@ def kinematic_model(vehicle_info_old, acc):
     vehicle_info.x, vehicle_info.y = x, y
     vehicle_info.acc = acc
     return vehicle_info
-

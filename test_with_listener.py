@@ -15,6 +15,7 @@ import random
 import numpy as np
 import openpyxl
 from listener import ContinuousSpeechToText
+import re
 
 Sim_times = 200
 suffix = '(with-True_instruction)'
@@ -30,8 +31,20 @@ def open_excel(i):
         workbook = openpyxl.load_workbook(file_name)
     return file_name, workbook
 
-def write_data(workbook, vehicles, llm_output, if_passed, t):
+
+def clean_val(val):
+    """Remove invalid control characters that cause openpyxl IllegalCharacterError."""
+    if isinstance(val, str):
+        return re.sub(r'[\x00-\x08\x0B-\x0C\x0E-\x1F]', '', val)
+    return val
+
+
+def write_data(workbook, vehicles, llm_output, frame, if_passed):
     column_names = ['t', 'x', 'y', 'v', 'acc', 'theta', 'dis2des', 'type', 'action', 'HDVintent', 'HDVstyle', 'HMI', 'if_passed']
+    
+    # Sanitize LLM string outputs
+    clean_llm = [clean_val(out) for out in llm_output]
+
     for vehicle in vehicles:
         sheet_name = str(vehicle.id)
         if sheet_name not in workbook.sheetnames:
@@ -39,13 +52,35 @@ def write_data(workbook, vehicles, llm_output, if_passed, t):
             worksheet.append(column_names)
         else:
             worksheet = workbook[sheet_name]
-        state = [round(vehicle.x, 2), round(vehicle.y, 2), round(vehicle.speed, 2), round(vehicle.acc, 2), round(vehicle.heading, 2), round(vehicle.dis2des, 2), vehicle.aggressiveness, llm_output[0], llm_output[2], llm_output[3], llm_output[1], if_passed]
-        row_data = [t, round(vehicle.x, 2), round(vehicle.y, 2), round(vehicle.speed, 2), round(vehicle.acc, 2), round(vehicle.heading, 2), round(vehicle.dis2des, 2), vehicle.aggressiveness, llm_output[0], llm_output[2], llm_output[3], llm_output[1], if_passed]
+            
+        state = [
+            round(vehicle.x, 2), 
+            round(vehicle.y, 2), 
+            round(vehicle.speed, 2), 
+            round(vehicle.acc, 2), 
+            round(vehicle.heading, 2), 
+            round(vehicle.dis2des, 2), 
+            vehicle.aggressiveness, 
+            clean_llm[0], 
+            clean_llm[2], 
+            clean_llm[3], 
+            clean_llm[1], 
+            if_passed
+        ]
+        
+        row_data = [frame] + state
+
+        # Clean all items before appending/writing to cells
+        row_data = [clean_val(item) for item in row_data]
+        state = [clean_val(item) for item in state]
+
         worksheet.append(row_data)
-        worksheet.cell(row=t + 2, column=1, value=t)
+        worksheet.cell(row=frame + 2, column=1, value=frame)
         for i, item in enumerate(state):
-            worksheet.cell(row=t + 2, column=i + 2, value=item)
+            worksheet.cell(row=frame + 2, column=i + 2, value=item)
+            
     return workbook
+
 
 class Simulator:
     def __init__(self, case_id, seed):
@@ -64,8 +99,6 @@ class Simulator:
         self.st = time.time()
         self.executor = ThreadPoolExecutor(max_workers=3)
         self.file_name, self.workbook = open_excel(case_id)
-
-
 
     def run(self):
         " ---- option 1: show animation ---- "
@@ -153,7 +186,6 @@ class Simulator:
         print('Talk&Translate time', round(time.time() - time_start, 2))
         for i in range(3):
             print("Voice instruction:", self.instruction_info)
-
 
 
 # 运行模拟器

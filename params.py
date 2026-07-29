@@ -2,7 +2,7 @@ import math
 import numpy as np
 
 # Scenario name
-Scenario_name = 'intersection'
+Scenario_name = 'roundabout'  # intersection, merge, roundabout
 # HV params
 Action_space = np.array([[0, 0], [2, 0], [-2, 0], [-4, 0]])
 Action_length = len(Action_space)

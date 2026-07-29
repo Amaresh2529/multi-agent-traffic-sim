@@ -8,6 +8,8 @@ from langchain.vectorstores import Chroma
 from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain.docstore.document import Document
 from sentence_transformers import SentenceTransformer
+import os
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
 class EmbeddingWrapper:
     def __init__(self, model_name_or_path):
@@ -22,8 +24,8 @@ class EmbeddingWrapper:
 class DrivingMemory:
     def __init__(self) -> None:
         # os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'  # for the region can not connect to huggingface
-        # model = SentenceTransformer("all-MiniLM-L6-v2")  # first time use, active line25&26, when model are downloaded, comment these line to avoid repeared download
-        # model.save("model/all-MiniLM-L6-v2/") 
+        model = SentenceTransformer("all-MiniLM-L6-v2")  # first time use, active line25&26, when model are downloaded, comment these line to avoid repeared download
+        model.save("model/all-MiniLM-L6-v2/") 
         model_path = 'model/all-MiniLM-L6-v2/'
         self.embedding = EmbeddingWrapper(model_path)
         self.memory_by_type = {}

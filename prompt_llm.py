@@ -15,24 +15,32 @@ class PRE_DEF_PROMPT():
     """
 
     def __init__(self):
-        self.SYSTEM_MESSAGE_PREFIX = """You are now act as a autonomous vehicle motion planner, who generate safe decision. 
-    Except for generate decision, to improve safety, you should also share your intention to express what you going to do to your surrounding vehicle. 
-    Now you are driving at an intersection."""
+        self.SYSTEM_MESSAGE_PREFIX = """You are now acting as an autonomous vehicle motion planner generating safe decisions. 
+    Except for generating decisions, to improve safety, you should also share your intention to express what you are going to do to surrounding vehicles. 
+    Now you are driving in a complex traffic scenario.
+
+    --- PSYCHOLOGICAL BEHAVIOR DICTIONARY ---
+    Use this to predict the intentions of surrounding tracking targets:
+    - NORMAL (nor): Rational drivers who follow speed limits and standard right-of-way.
+    - AGGRESSIVE (agg): Impatient drivers who over-speed and accelerate into conflict zones.
+    - CONSERVATIVE (con): Cautious drivers who yield early.
+    - HESITANT (hes): Nervous drivers who reduce speed heavily near conflicts but act unpredictably. Be decisive.
+    - DISTRACTED (dis): Erratic drivers whose velocities fluctuate randomly. Highly dangerous, give them a wide berth.
+    - PEDESTRIAN (ped): Human beings walking orthogonally across lanes. THEY HAVE ABSOLUTE RIGHT-OF-WAY.
+    -----------------------------------------
+    """
 
         self.TRAFFIC_RULES = """
     1. Try to keep a safe distance to the car in front of you.
     2. DO NOT change lane frequently. If you want to change lane, double-check the safety of vehicles on target lane.
+    3. PEDESTRIANS ALWAYS HAVE THE RIGHT OF WAY. If a pedestrian is in the conflict zone, you MUST yield.
     """
 
         self.DECISION_CAUTIONS = """
     1. You must output a decision when you finish this task. Your final output decision must be unique and not ambiguous. For example you cannot say "I can either keep lane or accelerate at current time".
     2. In every conflict between you and the above vehicle, only one vehicle can pass first at each conflict. Based on above information, share your intention to other vehicles
     3. Your decision and intention to surrounding vehicle should be consistent.
-
     """
-    # 2. You need to always remember your vehicle ID, your available actions and your surrounding vehicle (which you should give suggestions).
-    # 3. Once you have a decision, you should check the safety with all the vehicles affected by your decision.
-    # 4. If you verify a decision is unsafe, you should start a new one and verify its safety again from scratch.
 
     def get_traffic_rules(self):
         return self.TRAFFIC_RULES
@@ -55,7 +63,6 @@ def prompts(name, description):
     return decorator
 
 class getAvailableActions:
-    # def __init__(self, ) -> None:
     @prompts(name='Get Available Actions',
              description="""Useful before you make decisions, this tool let you know what are your available actions in this situation. The input to this tool should be 'ego'.""")
     def _get_available_actions(self, ego_info):
@@ -65,8 +72,6 @@ class getAvailableActions:
         maximal or minimal speed.
         :return: the list of available actions
         """
-        # if not isinstance(self.action_type, DiscreteMetaAction):
-        #     raise ValueError("Only discrete meta-actions can be unavailable.")
         actions = ['IDLE']
         if ego_info.speed < ego_info.max_speed:
             actions.append('FASTER')
@@ -76,21 +81,6 @@ class getAvailableActions:
 
     def inference(self, ego_info) -> str:
         outputPrefix = 'You can ONLY use one of the following actions: IDLE, FASTER, SLOWER\n '
-        # availableActions = self._get_available_actions(ego_info)
-        # for action in availableActions:
-        #     outputPrefix += action + '--' + ACTIONS_DESCRIPTION[action] + ':'
-        #     if 'IDLE' in availableActions:
-        #         outputPrefix += 'You should check idle action as FIRST priority. \n'
-        #     if 'FASTER' in availableActions:
-        #         outputPrefix += 'Consider acceleration action carefully. \n'
-        #     if 'SLOWER' in availableActions:
-        #         outputPrefix += 'The deceleration action is LAST priority. \n'
-        # outputPrefix += """\nTo check decision safety you should follow steps:
-        # Step 1: Get the vehicles in this lane that you may affect. Acceleration, deceleration and idle action affect the Current lane, while left and right lane changes affect the Adjacent lane.
-        # Step 2: If there are vehicles, check safety between ego and all vehicles in the action lane ONE by ONE.
-        # Step 3: If you find There is no car driving on your "current lane" and you have no conflict with any other vehicle, you can drive faster ! but not too fast to follow the traffic rules.
-        # Step 4: If you want to make lane change consider :"Safety Assessment for Lane Changes:" Safe means it is safe to change ,If you want to do IDLE, FASTER, SLOWER, you should consider "Safety Assessment in Current Lane:"
-        # """
         return outputPrefix
 
 class isAccelerationConflictWithCar:
@@ -178,9 +168,7 @@ class isDecelerationSafe:
             return f"acceleration is safe."
 
 def available_action(toolModels, ego_info):
-    # Use tools to analyze the situation
     available_action_tool = next((tool for tool in toolModels if isinstance(tool, getAvailableActions)), None)
-    # Use tools to analyze the situation
     available_action = {}
     available_lanes_analysis = available_action_tool.inference(ego_info)
     available_action[available_action_tool] = available_lanes_analysis
@@ -204,26 +192,22 @@ def interaction_vehicle(ego_info, other_info):
     return msg
 
 def check_safety_in_current_lane(toolModels, ego_info, other_info):
-    # lane_cars_id -- {'lane_0': {'leadingCar': None, 'rearingCar': IDMVehicle #224: [173.94198546   0.        ]}}
-    # availabel_lane -- {'currentLaneID': 'lane_0', 'leftLane': '', 'rightLane': ''}
     safety_analysis = {
         'acceleration_conflict': None,
         'keep_speed_conflict': None,
         'deceleration_conflict': None
     }
 
-    # Extract tools from toolModels
     acceleration_tool = next((tool for tool in toolModels if isinstance(tool, isAccelerationConflictWithCar)), None)
     keep_speed_tool = next((tool for tool in toolModels if isinstance(tool, isKeepSpeedConflictWithCar)), None)
     deceleration_tool = next((tool for tool in toolModels if isinstance(tool, isDecelerationSafe)), None)
     leading_vehicle_info, rearing_vehicle_info = tools.get_leading_rearing_vehicle_in_same_lane(ego_info, other_info)
 
-    # Check for conflicts if there is a car in the current lane
-    if leading_vehicle_info is not None:  # 如果ego前面有车
+    if leading_vehicle_info is not None:  
         safety_analysis['acceleration_conflict'] = acceleration_tool.inference(ego_info, leading_vehicle_info)
     if leading_vehicle_info is not None or rearing_vehicle_info is not None:
         safety_analysis['keep_speed_conflict'] = keep_speed_tool.inference(ego_info, leading_vehicle_info, rearing_vehicle_info)
-    if rearing_vehicle_info is not None:  # 如果ego后面有车
+    if rearing_vehicle_info is not None:  
         safety_analysis['deceleration_conflict'] = deceleration_tool.inference(ego_info, rearing_vehicle_info)
     return safety_analysis
 
@@ -237,7 +221,7 @@ def check_safety_with_conflict_vehicles(ego_info, other_info):
     elif dangerous_level == 2:
         return 'acceleration will cause danger, you can not accelerate'
     elif dangerous_level == 3:
-        return 'acceleration will cause serious danger, consider decelerate.'  # You output decision have to be SLOWER (note that it is in capital letters)!!!
+        return 'acceleration will cause serious danger, consider decelerate.'  
     elif dangerous_level == -1:
         return 'surround vehicle stopped, better accelerate for efficiency'
     else:
@@ -252,34 +236,12 @@ def check_conflict_point_occupied(ego_info, other_info):
 def format_decision_info(available_action_msg, interaction_vehicle_msg, current_lane_safety_msg, conflict_lane_safety_msg, conflict_point_occupied):
     formatted_message = ""
 
-    # Add available actions information
     formatted_message += "\nAvailable Actions:\n"
     for tool, action_info in available_action_msg.items():
         formatted_message += f"- {action_info}\n"
 
-    # information of vehicle to interact
     formatted_message += "\nSurrounding Vehicle Information:\n"
     formatted_message += interaction_vehicle_msg
 
     formatted_message += conflict_point_occupied
-
-    # Safety assessment in the current lane
-    # formatted_message += "\nSafety Assessment in Current Lane:\n"
-    # for action, safety in current_lane_safety_msg.items():
-    #     formatted_message += f"- {action.capitalize().replace('_', ' ')}: {safety}\n"
-
-    # Safety assessment with conflict vehicles
-    # formatted_message += "\nSafety Assessment with Vehicle Not in Current Lane but Have Conflict with Ego Vehicle:\n"
-    # for action, safety in conflict_lane_safety_msg.items():
-    #     formatted_message += f"- {action.capitalize().replace('_', ' ')}: {safety}\n"
-
-    # Most dangerous conflict info which same pattern as memory
-    # if most_dangerous_info['delta ttcp'] is not None:
-    #     formatted_message += f"\n Currently, the most dangerous collision information with the ego vehicle is as follows: \n"
-    #     formatted_message += f"The time to collision is {most_dangerous_info['delta ttcp']}s, ego vehicle's the distance to the collision point is {most_dangerous_info['distance to conflict']} m, " \
-    #                          f"and the current speed of the ego vehicle is {most_dangerous_info['speed']}, the distance to the collision point of conflict vehicle is {most_dangerous_info['distance to conflict (others)']} m, its speed is {most_dangerous_info['speed (others)']}\n"
-    # else:
-    #     formatted_message += f"\n Currently, ego vehicle do not have conflict \n"
-    #     formatted_message += f"\n Conflict info is empty \n"
-    # print(formatted_message)
     return formatted_message

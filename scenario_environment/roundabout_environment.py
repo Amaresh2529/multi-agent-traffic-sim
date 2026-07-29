@@ -1,6 +1,6 @@
-import copy
-import math
+from sqlalchemy.sql.functions import random
 import random
+import math
 import numpy as np
 from matplotlib import pyplot as plt
 from scipy.interpolate import splrep, splev
@@ -31,16 +31,33 @@ def scenario_outfit(ax, color=RGB_to_Hex('202,202,202')):
     ax.plot([20, 100], [-5, -5], c=color)
     ax.plot([-100, -20], [5, 5], c=color)
     ax.plot([-100, -20], [-5, -5], c=color)
-    #
+    
     ax.plot([5, 5], [20, 100], c=color)
     ax.plot([-5, -5], [20, 100], c=color)
     ax.plot([5, 5], [-100, -20], c=color)
     ax.plot([-5, -5], [-100, -20], c=color)
 
-    ax.plot([0, 0], [25, 100], c='black', linestyle='--', linewidth=0.5,alpha=0.5)  # 虚线
+    ax.plot([0, 0], [25, 100], c='black', linestyle='--', linewidth=0.5,alpha=0.5)  
     ax.plot([0, 0], [-100, -25], c='black', linestyle='--', linewidth=0.5,alpha=0.5)
     ax.plot([-100, -25], [0, 0], c='black', linestyle='--', linewidth=0.5,alpha=0.5)
     ax.plot([25, 100], [0, 0], c='black', linestyle='--', linewidth=0.5,alpha=0.5)
+
+    # --- NEW: Pedestrian Crosswalk Visuals ---
+    cw_style = ':'
+    cw_color = 'gray'
+    cw_width = 1.5
+    # South crosswalk
+    ax.plot([-7.5, 7.5], [-20, -20], c=cw_color, linestyle=cw_style, linewidth=cw_width)
+    ax.plot([-7.5, 7.5], [-25, -25], c=cw_color, linestyle=cw_style, linewidth=cw_width)
+    # North crosswalk
+    ax.plot([-7.5, 7.5], [20, 20], c=cw_color, linestyle=cw_style, linewidth=cw_width)
+    ax.plot([-7.5, 7.5], [25, 25], c=cw_color, linestyle=cw_style, linewidth=cw_width)
+    # East crosswalk
+    ax.plot([20, 20], [-7.5, 7.5], c=cw_color, linestyle=cw_style, linewidth=cw_width)
+    ax.plot([25, 25], [-7.5, 7.5], c=cw_color, linestyle=cw_style, linewidth=cw_width)
+    # West crosswalk
+    ax.plot([-20, -20], [-7.5, 7.5], c=cw_color, linestyle=cw_style, linewidth=cw_width)
+    ax.plot([-25, -25], [-7.5, 7.5], c=cw_color, linestyle=cw_style, linewidth=cw_width)
 
 
 def smooth_ployline(cv_init, point_num=3000):
@@ -72,7 +89,6 @@ def if_going_straight(entrance, exit):
         return True
     else:
         return False
-
 
 def if_right_turning(entrance, exit):
     if entrance == 's':
@@ -161,27 +177,16 @@ def roundabout_ref_line(entrance, exit):
     ref_line = np.vstack((x, y))
     return ref_line.T
 
-
 def record_ref_line_distance2exit(ref_line):
-    """
-    for calculate vehicle distance to exit which computation expensive
-    store each point distance to exit
-    only employ when T=0s or vehicle changes ref_line
-    """
     cv = ref_line
     gap_list = np.zeros(len(cv))
     for point in range(len(ref_line) - 1):
         gap = np.sqrt((cv[point, 0] - cv[point + 1, 0]) ** 2 + (cv[point, 1] - cv[point + 1, 1]) ** 2)
         gap_list[point:] += gap
     ref_line_distance2exit = max(gap_list) - np.array(gap_list)
-    # ref_line_distance2exit = np.flipud(gap_list)
-    # print(ref_line_distance2exit[0:10])
     return ref_line_distance2exit
 
 def entrance_ref_line(entrance, exit):
-    """
-    ref_line of entrance
-    """
     ref_line = None
     if entrance == 'w':
         x = np.linspace(-100, -25, 2000)
@@ -202,9 +207,6 @@ def entrance_ref_line(entrance, exit):
     return ref_line.T
 
 def exit_ref_line(entrance, exit):
-    """
-    ref_line of exit
-    """
     ref_line = None
     if exit == 'w':
         x = np.linspace(-25.1, -100, 2000)
@@ -237,11 +239,8 @@ def concatenate_ref_lane(entrance, exit):
     return ref_lane
 
 def default_exit_and_state(entrance, exit):
-    """
-    default exit of each entrance
-    """
     state = None
-    velocity = np.random.uniform(6, 9)  # initial velocity will be [6, 9)
+    velocity = np.random.uniform(6, 9)  
     heading = None
 
     if entrance == 'w':
@@ -268,10 +267,6 @@ def default_exit_and_state(entrance, exit):
     return state[0], state[1], velocity, heading, ori_dis2des-20, SPEED_LIMIT
 
 def record_all_possible_ref_line():
-    """
-    instead of calculate ref_line at each time
-    store all possible ref_line and its distance2exit(gap list)
-    """
     possible_ref_line_list = []
     possible_ref_line_distance2exit_list = []
     total_length = []
@@ -289,7 +284,6 @@ def record_all_possible_ref_line():
         total_length.append(dict(zip(ENTRANCE_EXIT_RELATION[entrance], entrance_possible_total_length)))
     return dict(zip(POSSIBLE_ENTRANCE, possible_ref_line_list)), dict(zip(POSSIBLE_ENTRANCE, possible_ref_line_distance2exit_list)), dict(zip(POSSIBLE_ENTRANCE, total_length))
 
-
 def find_dis2des(entrance, exit, x, y):
     ref_line = ALL_REF_LINE[entrance][exit]
     gap_list = ALL_GAP_LIST[entrance][exit]
@@ -297,8 +291,74 @@ def find_dis2des(entrance, exit, x, y):
     dis2des = gap_list[index]
     return dis2des
 
+
+# --- NEW: Pedestrian Splines and Caching ---
+
+def pedestrian_ref_line(crosswalk_loc, direction):
+    """
+    Generates orthogonal straight lines across the lanes for pedestrians.
+    crosswalk_loc: 'n', 's', 'e', 'w'
+    direction: 1 (left to right / top to bottom), -1 (right to left / bottom to top)
+    """
+    if crosswalk_loc == 's':
+        x = np.linspace(-7.5, 7.5, 1000) if direction == 1 else np.linspace(7.5, -7.5, 1000)
+        y = -22.5 * np.ones_like(x)
+    elif crosswalk_loc == 'n':
+        x = np.linspace(-7.5, 7.5, 1000) if direction == 1 else np.linspace(7.5, -7.5, 1000)
+        y = 22.5 * np.ones_like(x)
+    elif crosswalk_loc == 'e':
+        y = np.linspace(7.5, -7.5, 1000) if direction == 1 else np.linspace(-7.5, 7.5, 1000)
+        x = 22.5 * np.ones_like(y)
+    elif crosswalk_loc == 'w':
+        y = np.linspace(-7.5, 7.5, 1000) if direction == 1 else np.linspace(7.5, -7.5, 1000)
+        x = -22.5 * np.ones_like(y)
+    else:
+        return None
+    return np.vstack((x, y)).T
+
+def default_pedestrian_state(crosswalk_loc, direction):
+    """ Initializes human kinematic states at the edge of the crosswalk """
+    velocity = 1.5 
+    max_speed = 3.0
+    if crosswalk_loc == 's':
+        state = [-7.5, -22.5] if direction == 1 else [7.5, -22.5]
+        heading = 0.0 if direction == 1 else math.pi
+    elif crosswalk_loc == 'n':
+        state = [-7.5, 22.5] if direction == 1 else [7.5, 22.5]
+        heading = 0.0 if direction == 1 else math.pi
+    elif crosswalk_loc == 'e':
+        state = [22.5, 7.5] if direction == 1 else [22.5, -7.5]
+        heading = 1.5 * math.pi if direction == 1 else 0.5 * math.pi
+    elif crosswalk_loc == 'w':
+        state = [-22.5, -7.5] if direction == 1 else [-22.5, 7.5]
+        heading = 0.5 * math.pi if direction == 1 else 1.5 * math.pi
+    
+    dis2des = 15.0 # Total crosswalk distance
+    return state[0], state[1], velocity, heading, dis2des, max_speed
+
+def record_all_pedestrian_ref_line():
+    possible_locs = ['n', 's', 'e', 'w']
+    directions = [1, -1]
+    ped_ref_line_list = {}
+    ped_gap_list = {}
+    
+    for loc in possible_locs:
+        ped_ref_line_list[loc] = {}
+        ped_gap_list[loc] = {}
+        for d in directions:
+            ref_line = pedestrian_ref_line(loc, d)
+            ped_ref_line_list[loc][d] = ref_line
+            ped_gap_list[loc][d] = record_ref_line_distance2exit(ref_line)
+            
+    return ped_ref_line_list, ped_gap_list
+
+
 print('Initialize roundabout environment...')
 ALL_REF_LINE, ALL_GAP_LIST, REF_LINE_TOTAL_LENGTH = record_all_possible_ref_line()
+
+# Cache the pedestrian paths for real-time tracking
+PED_REF_LINE, PED_GAP_LIST = record_all_pedestrian_ref_line()
+
 CONFLICT_RELATION = {'s': {'e': {'we': 99.78564593363033, 'wn': 99.78564593363033}, 'w': {'we': 154.76351633116838, 'wn': 154.76351633116838}, 'n': {'we': 127.27458121290213, 'wn': 127.27458121290213}}, 'w': {'e': {'se': 99.66532772509943, 'sw': 99.66532772509943, 'sn': 99.66532772509943}, 'n': {'se': 127.15365197519074, 'sw': 127.15365197519074, 'sn': 127.15365197519074}}}
 CONFLICT_RELATION_STATE = {'s': {'e': {'we': (6.362653632019546, -16.60060155498124), 'wn': (6.362653632019546, -16.60060155498124)},
                                  'w': {'we': (6.362653632019546, -16.60060155498124), 'wn': (6.362653632019546, -16.60060155498124)},
