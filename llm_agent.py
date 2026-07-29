@@ -62,7 +62,7 @@ class LLM_Agent():
                       "You can choose your decision and your intention\n"
                       "You need to consider the following questions step by step to reach your conclusion:\n"
                       "1. What is the likely intention of the most dangerous entity (Target 1) considering its past actions? (e.g., ACCELERATE or DECELERATE? If human, PEDESTRIAN_CROSSING)\n"
-                      "2. Based on its past actions and your estimation on its intention, what is Target 1's driving style? (e.g., AGGRESSIVE, CONSERVATIVE, or PEDESTRIAN)\n"
+                      "2. Based on its past actions and your estimation on its intention, what is Target 1's driving style? (e.g., AGGRESSIVE, CONSERVATIVE, HESITANT, DISTRACTED, or PEDESTRIAN)\n"
                       "3. What action should you take next based on Target 1? STRICT RULE: IF TARGET 1 IS A PEDESTRIAN, YOU MUST CHOOSE SLOWER OR IDLE. Pedestrians have absolute right-of-way! (Options: IDLE, FASTER, SLOWER)\n"
                       "4. What you going to do next, what is your intention? (e.g., I will faster/slower/stop/go first/...)\n"
                       "Most importantly, your action must align with your intention\n"
@@ -73,7 +73,7 @@ class LLM_Agent():
                       "Final Answer: \n"
                       "    \"thoughts\": {\"<your thoughts when consider the above questions step by step to reach your conclusion)>\"},\n"
                       "    \"surrounding vehicle intention\": {\"<Target 1's intention, only output ACCELERATE or DECELERATE)>\"},\n"
-                      "    \"style\": {\"<Target 1's driving style, only output AGGRESSIVE or CONSERVATIVE)>\"},\n"
+                      "    \"style\": {\"<Target 1's driving style, only output AGGRESSIVE, CONSERVATIVE, HESITANT, or DISTRACTED)>\"},\n"
                       "    \"decision\": {\"<ego car's decision, ONE of the available actions which is IDLE, FASTER, SLOWER)>\"},\n"
                       "    \"your intention to share\": {\"<What you going to do like: I will XXX (less than five word, easy to understand, output with lowercase)>\"} \n"
                       "```\n")
@@ -91,14 +91,14 @@ class LLM_Agent():
                       f"Surrounding vehicle says: {instruction_info}\n"
                       "You need to consider the following questions step by step to reach your conclusion:\n"
                       "1. What is the likely intention of the most dangerous entity (Target 1) considering its past actions? (e.g., ACCELERATE or DECELERATE?)\n"
-                      "2. Based on its past actions and your estimation on its intention, what is Target 1's driving style? (e.g., AGGRESSIVE, CONSERVATIVE)\n"
+                      "2. Based on its past actions and your estimation on its intention, what is Target 1's driving style? (e.g., AGGRESSIVE, CONSERVATIVE, HESITANT, DISTRACTED)\n"
                       "3. What action should you take next? STRICT RULE: IF TARGET 1 IS A PEDESTRIAN, YOU MUST YIELD AND CHOOSE SLOWER OR IDLE. (Options: IDLE, FASTER, SLOWER)\n"
                       "4. Shared your intention (What you going to do) to surrounding vehicle based on your action. (e.g., I will ....)\n"
                       "ONLY OUTPUT YOUR FINAL DECISION IN THE FOLLOWING FORMAT AND NOTHING ELSE (DO NOT OUTPUT YOUR THOUGHTS):\n"
                       "```\n"
                       "Final Answer: \n"
                       "    \"surrounding vehicle intention\": {\"<Target 1's intention, only output ACCELERATE or DECELERATE)>\"},\n"
-                      "    \"style\": {\"<Target 1's driving style, only output AGGRESSIVE or CONSERVATIVE)>\"},\n"
+                      "    \"style\": {\"<Target 1's driving style, only output AGGRESSIVE, CONSERVATIVE, HESITANT, or DISTRACTED)>\"},\n"
                       "    \"decision\": {\"<ego car's decision, ONE of the available actions which is IDLE, FASTER, SLOWER)>\"},\n"
                       "    \"your intention to share\": {\"<What you going to do and reasons (LESS THAN EIGHT WORDS)>\"} \n"
                       "```\n")
@@ -154,7 +154,7 @@ class LLM_Agent():
         else:
             primary_other = other_infos
 
-        # --- NEW: Bypass vehicle lane math if the primary threat is a Pedestrian ---
+        # --- Bypass vehicle lane math if the primary threat is a Pedestrian ---
         if getattr(primary_other, 'type', 'vehicle') == 'pedestrian':
             base_prompt_info = "SAFETY WARNING: A pedestrian has been detected in your vicinity. Standard vehicle interaction rules are superseded by pedestrian safety logic. YOU MUST YIELD."
         else:
@@ -178,7 +178,7 @@ class LLM_Agent():
         else:
             primary_other = other_infos
 
-        # --- NEW: Safely cache pedestrian yielding memory without relying on TTCP ---
+        # --- Safely cache pedestrian yielding memory without relying on TTCP ---
         if getattr(primary_other, 'type', 'vehicle') == 'pedestrian':
             action = llm_output[0]
             if action in ['SLOWER', 'IDLE']:  # Only log successful yielding actions
