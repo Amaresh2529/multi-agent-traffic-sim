@@ -1,4 +1,8 @@
+import numpy as np
+import tools
+import math
 from params import *
+
 if Scenario_name == 'intersection':
     from scenario_environment import intersection_environment as environment
 elif Scenario_name == 'merge':
@@ -23,13 +27,25 @@ class IDM:
             10,  # (120 + np.random.uniform(-10, 10)) / 3.6  # desired speed (m/s)
             -4,  # max deceleration (m/s^2)
         ]
-        self.other_info = other_info
+        
+        # --- NEW: Gap 4 Multi-Agent List Unwrapping ---
+        if isinstance(other_info, list):
+            self.other_info = tools.find_opponent(ego_info, other_info)
+        else:
+            self.other_info = other_info
+            
         # calculate all variables for IDM
         self.distance = self.update_d()
         self.delta_v = self.update_v()
         self.llm_action = llm_action
 
     def update_d(self):
+        # --- NEW: Pedestrian Euclidean Override ---
+        if getattr(self.other_info, 'type', 'vehicle') == 'pedestrian':
+            dist = math.sqrt((self.ego_info.x - self.other_info.x)**2 + (self.ego_info.y - self.other_info.y)**2)
+            return dist
+
+        # --- Original Vehicle Conflict Logic ---
         if str(self.other_info.entrance) + str(self.other_info.exit) in environment.CONFLICT_RELATION[self.ego_info.entrance][self.ego_info.exit]:
             ego_dis2cp = self.ego_info.dis2des - environment.CONFLICT_RELATION[self.ego_info.entrance][self.ego_info.exit][str(self.other_info.entrance) + str(self.other_info.exit)]
             other_dis2cp = self.other_info.dis2des - environment.CONFLICT_RELATION[self.other_info.entrance][self.other_info.exit][str(self.ego_info.entrance) + str(self.ego_info.exit)]

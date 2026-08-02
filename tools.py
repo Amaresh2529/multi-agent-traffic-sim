@@ -17,44 +17,54 @@ elif Scenario_name == 'roundabout':
 else:
     raise ValueError('no such environment, check Scenario_name in params')
 
-
 def initialize_vehicles(num=4):
     '''generate ego vehicle and inter vehicles safely based on available map entrances'''
     ego_entrance = random.choice(POSSIBLE_ENTRANCE)
     ego_info = Vehicle(ego_entrance, random.choice(ENTRANCE_EXIT_RELATION[ego_entrance]), 'cav', 0)
     
-    # Get all entrances except the ego's to prevent spawning on top of each other
     available_entrances = [e for e in POSSIBLE_ENTRANCE if e != ego_entrance]
-    
     other_infos = []
     vehicle_id = 1
     
-    # Keep spawning until we hit the requested number OR we run out of safe roads
+    # --- NEW: Guaranteed Pedestrian Spawn for Gap 4 Visuals ---
+    ped_entrance = random.choice(available_entrances)
+    ped_exit = random.choice(ENTRANCE_EXIT_RELATION[ped_entrance])
+    
+    # Initialize as a standard entity, but strictly override its type and physics
+    ped_info = Vehicle(ped_entrance, ped_exit, 'nor', vehicle_id)
+    ped_info.type = 'pedestrian'
+    ped_info.behavior = 'crossing'
+    ped_info.speed = 1.2  # Human walking speed (m/s)
+    ped_info.max_speed = 2.0
+    ped_info.dis2des = 20  # Spawn them close enough to the crosswalk to be visible
+    
+    other_infos.append(ped_info)
+    vehicle_id += 1
+    available_entrances.remove(ped_entrance)
+    
+    # --- Keep spawning the remaining HDV cars ---
     while len(other_infos) < (num - 1) and len(available_entrances) > 0:
         other_entrance = random.choice(available_entrances)
         other_exit = random.choice(ENTRANCE_EXIT_RELATION[other_entrance])
         
         other_info = Vehicle(other_entrance, other_exit, random.choice(['nor', 'agg', 'con']), vehicle_id)  
         
-        # Only add the vehicle if it actually creates an interesting conflict scenario
         if not if_passed_conflict_point(ego_info, other_info):
             other_infos.append(other_info)
             vehicle_id += 1
             
-        # Remove this entrance from the pool so we don't spawn two cars in the exact same spot
         available_entrances.remove(other_entrance)
         
-    # Fallback: If the randomizer failed to create ANY conflicts, force at least 1 target
-    if len(other_infos) == 0:
+    # Fallback: Guarantee at least one car spawns alongside the pedestrian
+    if len(other_infos) == 1:
         while True:
             backup_entrance = random.choice([e for e in POSSIBLE_ENTRANCE if e != ego_entrance])
             backup_exit = random.choice(ENTRANCE_EXIT_RELATION[backup_entrance])
-            backup_info = Vehicle(backup_entrance, backup_exit, random.choice(['nor', 'agg', 'con']), 1)
+            backup_info = Vehicle(backup_entrance, backup_exit, random.choice(['nor', 'agg', 'con']), vehicle_id)
             if not if_passed_conflict_point(ego_info, backup_info):
                 other_infos.append(backup_info)
                 break
 
-    # We now guarantee other_infos is ALWAYS a list, preventing downstream crashes
     return ego_info, other_infos
 
 def cal_ttcp(speed_limit, veh_dis2cp, veh_v, veh_acc):
@@ -215,6 +225,21 @@ def get_dis2cp(vehicle1_info, vehicle2_info):
     return dis2cp
 
 def if_passed_conflict_point(ego_info, other_info):
+    # --- Gap 4 Multi-Agent List Handler ---
+    if isinstance(other_info, list):
+        for other in other_info:
+            if not if_passed_conflict_point(ego_info, other):
+                return False
+        return True
+
+    # --- Pedestrian Spatial Bypass ---
+    if getattr(other_info, 'type', 'vehicle') == 'pedestrian':
+        dist = get_euclidean_distance(ego_info, other_info)
+        if dist > 10.0: 
+            return True
+        return False
+
+    # --- Standard Vehicle Conflict Logic ---
     if str(ego_info.entrance) + str(ego_info.exit) in environment.CONFLICT_RELATION[other_info.entrance][other_info.exit]:
         ego_dis2cp = get_dis2cp(ego_info, other_info)
         other_dis2cp = get_dis2cp(other_info, ego_info)
@@ -369,6 +394,10 @@ def calculate_heading(x1, y1, x2, y2):
     return heading
 
 def generate_simulation_hdv_instruction(ego_info, other_info):
+    # --- Isolate primary threat from the N-Agent array ---
+    if isinstance(other_info, list):
+        other_info = find_opponent(ego_info, other_info)
+        
     if getattr(other_info, 'type', 'vehicle') == 'pedestrian':
         return 'Pedestrian crossing'
         

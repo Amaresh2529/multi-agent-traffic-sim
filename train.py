@@ -27,8 +27,6 @@ def open_excel(i):
     if os.path.exists(file_name):
         workbook = openpyxl.load_workbook(file_name)
 
-    # if 'Sheet' in workbook.sheetnames:
-    #     del workbook['Sheet']
     return file_name, workbook
 
 
@@ -45,8 +43,21 @@ def write_data(workbook, vehicles, llm_output, frame, if_passed):
     # Sanitize LLM string outputs
     clean_llm = [clean_val(out) for out in llm_output]
 
-    for vehicle in vehicles:
-        sheet_name = str(vehicle.id)
+    # --- Gap 4: Flatten the Multi-Agent List ---
+    flat_vehicles = []
+    for v in vehicles:
+        if isinstance(v, list):
+            flat_vehicles.extend(v)
+        else:
+            flat_vehicles.append(v)
+
+    for vehicle in flat_vehicles:
+        # --- Safely label pedestrian sheets so they don't overwrite cars ---
+        if getattr(vehicle, 'type', 'vehicle') == 'pedestrian':
+            sheet_name = f"Ped_{vehicle.id}"
+        else:
+            sheet_name = str(vehicle.id)
+            
         if sheet_name not in workbook.sheetnames:
             worksheet = workbook.create_sheet(sheet_name)
             worksheet.append(column_names)
@@ -57,14 +68,14 @@ def write_data(workbook, vehicles, llm_output, frame, if_passed):
             round(vehicle.x, 2), 
             round(vehicle.y, 2), 
             round(vehicle.speed, 2), 
-            round(vehicle.acc, 2), 
+            round(vehicle.acc, 2) if hasattr(vehicle, 'acc') else 0, 
             round(vehicle.heading, 2), 
             round(vehicle.dis2des, 2), 
-            vehicle.aggressiveness, 
-            clean_llm[0], 
-            clean_llm[2], 
-            clean_llm[3], 
-            clean_llm[1], 
+            getattr(vehicle, 'aggressiveness', 'normal'), 
+            clean_llm[0] if getattr(vehicle, 'type', 'vehicle') == 'cav' else "", 
+            clean_llm[2] if getattr(vehicle, 'type', 'vehicle') == 'cav' else "", 
+            clean_llm[3] if getattr(vehicle, 'type', 'vehicle') == 'cav' else "", 
+            clean_llm[1] if getattr(vehicle, 'type', 'vehicle') == 'cav' else "", 
             if_passed
         ]
         
@@ -106,21 +117,10 @@ class Simulator:
             os.makedirs(video_dir)
         ani.save(video_dir + str(self.case_id) + '.gif', dpi=50)
 
-        " ---- option 3: save as mp4 video ---- "
-        # ani = FuncAnimation(self.fig, self.update, interval=10, frames=Sim_times, blit=False, repeat=False, save_count=Sim_times)
-        # Writer = animation.writers['ffmpeg']
-        # writer = Writer(fps=10, codec="h264", bitrate=-1, metadata=dict(dpi=600, artist='Me'))
-        # video_dir = './video/' + strftime("%Y-%m-%d", gmtime()) + '/'
-        # if not os.path.exists(video_dir):
-        #     os.makedirs(video_dir)
-        # ani.save(video_dir + str(self.case_id) + '.mp4', writer=writer)
-        # plt.close()
-
     def update(self, frame):
         if tools.if_passed_conflict_point(self.cav_info, self.hdv_info):
             self.llm_output[0] = 'FASTER'
         else:
-            time1 = time.time()
             self.llm_output = self.agent.llm_run(self.llm_output, self.instruction_info, self.cav_info, self.hdv_info, self.memory)
 
         controller = IDM(self.cav_info, self.hdv_info, self.llm_output[0])
@@ -129,14 +129,15 @@ class Simulator:
 
         bayesian_agent = Bayesian_Agent(self.hdv_info, self.cav_info, action_type='discrete')
         temp_hdv_info = bayesian_agent.update_state()
-        # print(temp_hdv_info.x, temp_hdv_info.y, temp_hdv_info.speed, temp_hdv_info.heading, temp_hdv_info.dis2des, temp_hdv_info.entrance, temp_hdv_info.exit)
+        
         self.hdv_info, self.cav_info = temp_hdv_info, temp_cav_info
         tools.plot_figs(self.cav_info, self.hdv_info, self.ax, self.llm_output, self.instruction_info, self.retrieved_instruction_info)
         self.instruction_info = tools.generate_simulation_hdv_instruction(self.cav_info, self.hdv_info)
         if_passed = tools.if_passed_conflict_point(self.cav_info, self.hdv_info)
+        
         workbook = write_data(self.workbook, [self.hdv_info, self.cav_info], self.llm_output, frame, if_passed)
         workbook.save(self.file_name)
-        # print(self.instruction_info)
+
 
 for case in range(50):
     sim = Simulator(case)
